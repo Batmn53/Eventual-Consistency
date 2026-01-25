@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package notification;
+
+// Internal-only service used by the projection-service to fan out
+// task status change alerts to downstream systems.
+service NotificationService {
+  rpc SendTaskAlert (TaskAlert) returns (NotificationAck);
+}
+
+message TaskAlert {
+  // Expected: "TASK_STATUS_CHANGED"
+  string eventType = 1;
+
+  string taskId = 2;
+  string actorId = 3;
+  int32 version = 4;
+  int64 timestamp = 5;
+
+  // Status transition info (when available)
+  string previousStatus = 6;
+  string newStatus = 7;
+}
+
+message NotificationAck {
+  bool ok = 1;
+  string message = 2;
+}
+

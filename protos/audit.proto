@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package audit;
+
+// Internal-only service used by the projection-service to write an immutable
+// audit trail (append-only) for every processed event.
+service AuditService {
+  rpc LogEvent (AuditEvent) returns (AuditAck);
+}
+
+message AuditEvent {
+  string eventId = 1;
+  string eventType = 2;
+  string taskId = 3;
+  string actorId = 4;
+  int32 version = 5;
+  int64 timestamp = 6;
+
+  // Raw event payload as JSON string to preserve the original content.
+  string rawEventJson = 7;
+}
+
+message AuditAck {
+  bool ok = 1;
+  string message = 2;
+}
+

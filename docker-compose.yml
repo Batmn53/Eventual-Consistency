@@ -1,0 +1,261 @@
+version: '3.8'
+
+services:
+  # Zookeeper for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - workflow-network
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - workflow-network
+
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: workflow_user
+      POSTGRES_PASSWORD: workflow_pass
+      POSTGRES_DB: workflow_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./services/projection-service/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - workflow-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - workflow-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - KAFKA_BROKER=kafka:29092
+      - JWT_SECRET=mock-secret-key
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=workflow_user
+      - POSTGRES_PASSWORD=workflow_pass
+      - POSTGRES_DB=workflow_db
+    volumes:
+      - ./services/api-gateway/src:/app/src
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./services/api-gateway/src
+          target: /app/src
+        - action: sync
+          path: ./services/api-gateway/package.json
+          target: /app/package.json
+    depends_on:
+      - kafka
+      - postgres
+    networks:
+      - workflow-network
+
+  # Projection Service (Kafka Consumer)
+  projection-service:
+    build:
+      context: .
+      dockerfile: services/projection-service/Dockerfile
+    container_name: projection-service
+    environment:
+      - NODE_ENV=development
+      - KAFKA_BROKER=kafka:29092
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=workflow_user
+      - POSTGRES_PASSWORD=workflow_pass
+      - POSTGRES_DB=workflow_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NOTIFICATION_GRPC_ADDR=notification-service:50051
+      - AUDIT_GRPC_ADDR=audit-service:50052
+      - GRPC_DEADLINE_MS=1500
+    volumes:
+      - ./services/projection-service/src:/app/services/projection-service/src
+      - ./protos:/app/protos
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./services/projection-service/src
+          target: /app/services/projection-service/src
+        - action: sync
+          path: ./protos
+          target: /app/protos
+        - action: sync
+          path: ./services/projection-service/package.json
+          target: /app/services/projection-service/package.json
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+      - notification-service
+      - audit-service
+    networks:
+      - workflow-network
+
+  # Notification Service (Internal gRPC)
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    container_name: notification-service
+    environment:
+      - NODE_ENV=development
+      - PORT=50051
+      - BIND_ADDR=0.0.0.0:50051
+    volumes:
+      - ./services/notification-service/src:/app/services/notification-service/src
+      - ./protos:/app/protos
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./services/notification-service/src
+          target: /app/services/notification-service/src
+        - action: sync
+          path: ./protos
+          target: /app/protos
+        - action: sync
+          path: ./services/notification-service/package.json
+          target: /app/services/notification-service/package.json
+    networks:
+      - workflow-network
+
+  # Audit Service (Internal gRPC)
+  audit-service:
+    build:
+      context: .
+      dockerfile: services/audit-service/Dockerfile
+    container_name: audit-service
+    environment:
+      - NODE_ENV=development
+      - PORT=50052
+      - BIND_ADDR=0.0.0.0:50052
+    volumes:
+      - ./services/audit-service/src:/app/services/audit-service/src
+      - ./protos:/app/protos
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./services/audit-service/src
+          target: /app/services/audit-service/src
+        - action: sync
+          path: ./protos
+          target: /app/protos
+        - action: sync
+          path: ./services/audit-service/package.json
+          target: /app/services/audit-service/package.json
+    networks:
+      - workflow-network
+
+  # WebSocket Service
+  websocket-service:
+    build:
+      context: ./services/websocket-service
+      dockerfile: Dockerfile
+    container_name: websocket-service
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=development
+      - PORT=4001
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./services/websocket-service/src:/app/src
+    command: npm run dev
+    develop:
+      watch:
+        - action: sync
+          path: ./services/websocket-service/src
+          target: /app/src
+        - action: sync
+          path: ./services/websocket-service/package.json
+          target: /app/package.json
+    depends_on:
+      - redis
+    networks:
+      - workflow-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:4000
+      - REACT_APP_WS_URL=ws://localhost:4001
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend/src
+          target: /app/src
+        - action: sync
+          path: ./frontend/public
+          target: /app/public
+    depends_on:
+      - api-gateway
+      - websocket-service
+    networks:
+      - workflow-network
+
+volumes:
+  postgres-data:
+  redis-data:
+
+
+networks:
+  workflow-network:
+    driver: bridge
